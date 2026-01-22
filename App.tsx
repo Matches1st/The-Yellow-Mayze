@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useEffect, useRef, useState, useCallback, ErrorInfo, ReactNode } from 'react';
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls';
 import { GameState, Difficulty, SavedMaze, AppOptions, GridCell, ReplayFrame, ReplayEvent } from './types';
@@ -21,12 +21,8 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   public state: ErrorBoundaryState = { hasError: false, error: null };
-
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-  }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { hasError: true, error };

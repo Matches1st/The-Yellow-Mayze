@@ -463,7 +463,7 @@ export const GameOverlay: React.FC<Props> = ({
               OPTIONS
             </button>
           </div>
-          <div className="absolute bottom-4 left-4 text-[#888] text-lg">v1.2 – Enter the Mayze</div>
+          <div className="absolute bottom-4 left-4 text-[#888] text-lg">v1.3 – Enter the Mayze</div>
         </div>
       )}
 
