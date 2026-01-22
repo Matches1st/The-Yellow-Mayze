@@ -143,6 +143,10 @@ interface Props {
 
   // Exit Props
   exitOpacity: number;
+  
+  // Vent Interactions
+  interactionPrompt: string | null;
+  inVent: boolean;
 }
 
 export const GameOverlay: React.FC<Props> = ({
@@ -172,7 +176,9 @@ export const GameOverlay: React.FC<Props> = ({
   onReplayToggle,
   onReplaySeek,
   onReplaySpeed,
-  exitOpacity
+  exitOpacity,
+  interactionPrompt,
+  inVent
 }) => {
   const [activeMenu, setActiveMenu] = useState<'main' | 'mazes' | 'options' | 'generate'>('main');
   const [seedInput, setSeedInput] = useState('');
@@ -273,6 +279,25 @@ export const GameOverlay: React.FC<Props> = ({
                 style={{ opacity: exitOpacity }}
             />
         )}
+        
+        {/* INSIDE VENT OVERLAY */}
+        {inVent && (
+            <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center bg-black/60">
+                 {/* Vignette */}
+                 <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,#000000_100%)]"></div>
+                 
+                 {/* Bars / Grille Effect - Procedural CSS */}
+                 <div className="w-full h-full" style={{
+                     backgroundImage: `repeating-linear-gradient(0deg, transparent, transparent 40px, #000 40px, #000 50px),
+                                       repeating-linear-gradient(90deg, transparent, transparent 40px, #000 40px, #000 50px)`,
+                     opacity: 0.8
+                 }}></div>
+                 
+                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/50 text-xl font-minecraft animate-pulse">
+                     [ PRESS E TO EXIT ]
+                 </div>
+            </div>
+        )}
 
         {/* REPLAY UI OVERLAY */}
         {gameState === GameState.REPLAY && (
@@ -358,9 +383,16 @@ export const GameOverlay: React.FC<Props> = ({
           </div>
         )}
 
+        {/* INTERACTION PROMPT */}
+        {interactionPrompt && !inVent && gameState === GameState.PLAYING && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 mt-10 text-white font-minecraft text-2xl drop-shadow-md z-50 pointer-events-none animate-bounce">
+                {interactionPrompt}
+            </div>
+        )}
+
         {/* Hotbar */}
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/80 p-2 rounded-lg border-2 border-[#4A4A4A] flex gap-4 pointer-events-auto transition-opacity duration-500"
-             style={{ opacity: gameState === GameState.REPLAY ? 0.8 : 1 }}
+             style={{ opacity: gameState === GameState.REPLAY || inVent ? 0.3 : 1 }}
         >
           {/* SLOT 1: MAP ABILITY STATUS */}
           <div 

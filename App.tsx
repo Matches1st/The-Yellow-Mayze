@@ -78,6 +78,7 @@ let pointLights: THREE.PointLight[] = [];
 let markers: THREE.Mesh[] = [];
 let flashlight: THREE.SpotLight;
 let interactableObjects: THREE.Object3D[] = [];
+let ventObjects: THREE.Mesh[] = [];
 
 // Light Culling Configuration
 const CULL_DISTANCE = 25; 
@@ -111,6 +112,13 @@ const GameContent: React.FC = () => {
   const [selectedSlot, setSelectedSlot] = useState<0 | 2>(0); 
   const [markerCount, setMarkerCount] = useState(20);
   const [isBlackout, setIsBlackout] = useState(false);
+
+  // VENT STATE
+  const [inVent, setInVent] = useState(false);
+  const [interactionPrompt, setInteractionPrompt] = useState<string | null>(null);
+  const preVentPositionRef = useRef<THREE.Vector3 | null>(null);
+  const preVentRotationRef = useRef<THREE.Euler | null>(null);
+  const ventLockDirectionRef = useRef<THREE.Vector3 | null>(null);
 
   // MAP MECHANICS
   const [mapVisible, setMapVisible] = useState(false);
@@ -190,6 +198,61 @@ const GameContent: React.FC = () => {
           t: timeSpentRef.current
       });
   }, [mapVisible, isBlackout, currentMaze]);
+
+  const handleEnterVent = (targetVent: THREE.Mesh) => {
+      if (inVent) return;
+      
+      // Save current state
+      preVentPositionRef.current = camera.position.clone();
+      preVentRotationRef.current = camera.rotation.clone();
+
+      // Calculate enter position and look direction
+      const worldPos = new THREE.Vector3();
+      targetVent.getWorldPosition(worldPos);
+      
+      // The vent mesh is at offset +1.0 in Z relative to cell center.
+      // But the group is rotated.
+      // Easiest way: Get cell center from parent (the Group), and move camera there.
+      // The prompt says: "Teleport the player to a fixed offset just inside the vent... 
+      // Switch the player's view so they see the 'inside' vent grille texture directly in front"
+      // If I just move camera to cell center (y=0.5) and look at the vent world pos, it simulates being inside.
+      
+      const parent = targetVent.parent;
+      if (parent) {
+          // Center of the cell
+          const cellCenter = parent.position.clone();
+          cellCenter.y = 0.5; // Lower camera to crawl height
+          
+          camera.position.copy(cellCenter);
+          
+          // Look outward (towards the vent mesh)
+          camera.lookAt(worldPos);
+          
+          // Store look direction for locking
+          const lookDir = new THREE.Vector3();
+          camera.getWorldDirection(lookDir);
+          ventLockDirectionRef.current = lookDir;
+      }
+
+      setInVent(true);
+      setInteractionPrompt(null);
+      velocity.set(0,0,0); // Kill momentum
+      audioManager.playClick();
+  };
+
+  const handleExitVent = () => {
+      if (!inVent || !preVentPositionRef.current) return;
+      
+      camera.position.copy(preVentPositionRef.current);
+      if (preVentRotationRef.current) camera.rotation.copy(preVentRotationRef.current);
+      
+      preVentPositionRef.current = null;
+      preVentRotationRef.current = null;
+      ventLockDirectionRef.current = null;
+      
+      setInVent(false);
+      audioManager.playClick();
+  };
 
   // --- INITIALIZATION ---
   useEffect(() => {
@@ -324,6 +387,23 @@ const GameContent: React.FC = () => {
       }
 
       if (gameState !== GameState.PLAYING) return;
+      
+      // E Interaction
+      if (e.code === 'KeyE') {
+          if (inVent) {
+              handleExitVent();
+          } else if (interactionPrompt) {
+              // Find the vent we are looking at to enter
+              raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+              const intersects = raycaster.intersectObjects(ventObjects, false); // ventObjects is mesh array
+              if (intersects.length > 0 && intersects[0].distance < 3.0) {
+                  handleEnterVent(intersects[0].object as THREE.Mesh);
+              }
+          }
+      }
+
+      if (inVent) return; // Block other inputs if in vent
+
       switch(e.code) {
         case 'KeyW': moveForward = true; break;
         case 'KeyS': moveBackward = true; break;
@@ -372,7 +452,7 @@ const GameContent: React.FC = () => {
         lockControls();
       }
       
-      if (e.button === 2 && selectedSlot === 2 && markerCount > 0) {
+      if (e.button === 2 && selectedSlot === 2 && markerCount > 0 && !inVent) {
         placeMarker();
       }
     };
@@ -388,7 +468,7 @@ const GameContent: React.FC = () => {
       document.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('mousedown', onMouseDown);
     }
-  }, [gameState, selectedSlot, markerCount, replayDuration, lockControls, activateMap]);
+  }, [gameState, selectedSlot, markerCount, replayDuration, lockControls, activateMap, inVent, interactionPrompt]);
 
   // --- GAME LOOP ---
   const animate = useCallback(() => {
@@ -400,6 +480,7 @@ const GameContent: React.FC = () => {
 
     // --- REPLAY LOGIC ---
     if (gameState === GameState.REPLAY && loadedReplayRef.current) {
+        // ... (Replay logic remains unchanged) ...
         const frames = loadedReplayRef.current.frames;
         
         if (frames.length > 0) {
@@ -455,28 +536,21 @@ const GameContent: React.FC = () => {
                 flashlight.intensity = f.f ? 6 : 0;
 
                 // --- REPLAY VISUALS (Events) ---
-                // Re-implement visual logic based on frame state
-                
-                // 1. Calculate Intensity Multiplier
                 let intensityMult = 1.0;
                 if (f.ib) {
                     intensityMult = 0.0;
                 } else if (f.if) {
-                    // Re-generate flicker if active
                     const strobe = Math.sin(Date.now() * 0.047) > 0;
                     intensityMult = strobe ? 1.0 : 0.1;
                 }
 
-                // 2. Apply Fog & Emissive
                 if (scene.fog && scene.fog instanceof THREE.FogExp2) {
                   if (f.ib) {
-                      // Blackout
                       if (scene.fog.color.getHex() !== 0x000000) scene.fog.color.setHex(0x000000);
                       if (scene.fog.density !== 0.08) scene.fog.density = 0.08;
                       if (lightPanelMaterialRef.current) lightPanelMaterialRef.current.color.setHex(0x050505);
                       if (markerMaterialRef.current) markerMaterialRef.current.color.setHex(0xFFFFFF); // Glow
                   } else {
-                      // Normal
                       if (scene.fog.color.getHexString() !== COLORS.FOG.replace('#','').toLowerCase()) scene.fog.color.set(COLORS.FOG);
                       if (scene.fog.density !== 0.015) scene.fog.density = 0.015;
                       if (lightPanelMaterialRef.current) lightPanelMaterialRef.current.color.set(COLORS.LIGHT_EMISSIVE);
@@ -484,7 +558,6 @@ const GameContent: React.FC = () => {
                   }
                 }
 
-                // 3. Apply Light Intensity (Culling)
                 const pPos = camera.position;
                 const targetIntensity = 5.0 * intensityMult;
                 for (let i = 0; i < pointLights.length; i++) {
@@ -502,7 +575,6 @@ const GameContent: React.FC = () => {
                 camera.position.set(frameA.p.x, frameA.p.y, frameA.p.z);
             }
 
-            // Restore Markers & Explored Map for Replay
             markers.forEach(m => scene.remove(m)); markers = [];
             const activeEvents = loadedReplayRef.current.events.filter(e => e.t <= replayTime && e.type === 'marker');
             activeEvents.forEach(e => {
@@ -520,7 +592,6 @@ const GameContent: React.FC = () => {
             mapNeedsUpdateRef.current = true;
         }
         
-        // Render map if replay frame says it's visible
         updateMiniMap();
         renderer.render(scene, camera);
         return; 
@@ -530,9 +601,25 @@ const GameContent: React.FC = () => {
     const controls = controlsRef.current;
 
     if (gameState === GameState.PLAYING && controls && controls.isLocked) {
+
+      // VENT LOGIC: Check raycast every frame if NOT inside vent
+      if (!inVent) {
+          raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+          const intersects = raycaster.intersectObjects(ventObjects, false);
+          if (intersects.length > 0 && intersects[0].distance < 3.0) {
+              setInteractionPrompt("Press E to enter");
+          } else {
+              setInteractionPrompt(null);
+          }
+      } else {
+          // Inside Vent: Lock rotation
+          if (ventLockDirectionRef.current) {
+              const target = camera.position.clone().add(ventLockDirectionRef.current);
+              camera.lookAt(target);
+          }
+      }
       
       // 0. EXIT SEQUENCE HANDLER
-      // State Machine: NONE -> PAUSED -> FADING -> FINISHED
       if (exitStateRef.current === 'PAUSED' || exitStateRef.current === 'FADING') {
           // Freeze position/physics during exit sequence
           velocity.set(0, 0, 0); 
@@ -554,8 +641,6 @@ const GameContent: React.FC = () => {
               if (opacity >= 1.0) {
                   exitStateRef.current = 'FINISHED';
                   completeMaze(finalTimeRef.current);
-                  // CRITICAL FIX: DO NOT return to menu here. 
-                  // completeMaze() will switch state to REPLAY and loop will handle it next frame.
               }
           }
       } else {
@@ -572,10 +657,7 @@ const GameContent: React.FC = () => {
                   setMapVisible(false);
                   audioManager.playMapCooldownStart();
                   
-                  // Difficulty-based Cooldown Duration:
-                  // Baby/Easy: 20s
-                  // Normal: 60s
-                  // Hard/Hardcore: 80s
+                  // Difficulty-based Cooldown Duration
                   const diff = currentMaze?.difficulty || Difficulty.NORMAL;
                   let cooldown = 60.0;
                   if (diff === Difficulty.BABY || diff === Difficulty.EASY) cooldown = 20.0;
@@ -584,7 +666,6 @@ const GameContent: React.FC = () => {
                   mapCooldownRef.current = cooldown;
                   setMapCooldown(cooldown);
                   
-                  // Log Close Event
                   recordingEventsRef.current.push({ type: 'MAP_CLOSE', t: timeSpentRef.current });
               }
           } else if (mapCooldownRef.current > 0) {
@@ -598,67 +679,59 @@ const GameContent: React.FC = () => {
               }
           }
           
-          // 3. Physics & Collision (Only if not exiting)
-          velocity.x -= velocity.x * 10.0 * delta;
-          velocity.z -= velocity.z * 10.0 * delta;
-          velocity.y -= SETTINGS.GRAVITY * delta; 
-          direction.z = Number(moveForward) - Number(moveBackward);
-          direction.x = Number(moveRight) - Number(moveLeft);
-          direction.normalize();
-          const isMovingLongitudinally = moveForward || moveBackward;
-          const speed = isMovingLongitudinally ? SETTINGS.SPEED_WALK : 3.5;
-          if (moveForward || moveBackward) velocity.z -= direction.z * speed * 10.0 * delta;
-          if (moveLeft || moveRight) velocity.x -= direction.x * speed * 10.0 * delta;
-          controls.moveRight(-velocity.x * delta);
-          controls.moveForward(-velocity.z * delta);
-          
-          if (mazeDataRef.current) {
-            const pos = camera.position.clone();
-            const corrected = CollisionDetector.resolveCollision(
-                pos, 
-                mazeDataRef.current.grid, 
-                mazeDataRef.current.size,
-                extraCollidersRef.current // Pass Pit Walls
-            );
-            camera.position.x = corrected.x;
-            camera.position.z = corrected.z;
-            
-            const gx = Math.round(corrected.x / SETTINGS.UNIT_SIZE);
-            const gz = Math.round(corrected.z / SETTINGS.UNIT_SIZE);
-            const cell = mazeDataRef.current.grid[gz]?.[gx];
-            if (cell === 2) {
-                // VOID LOGIC:
-                // Check for mid-fall trigger
-                // SHALLOW TRIGGER: y < -1.5 
-                // With pit depth 2.5, this triggers ~1m before bottom
-                if (camera.position.y < FALL_TRIGGER_Y && exitStateRef.current === 'NONE') {
-                    // Trigger Exit Sequence: Abrupt Freeze
-                    exitStateRef.current = 'PAUSED';
-                    exitStartTimeRef.current = performance.now();
-                    finalTimeRef.current = timeSpentRef.current; // FREEZE TIMER
-                    
-                    // Abruptly stop player to create "hanging" illusion
-                    velocity.set(0, 0, 0); 
-                    
-                    audioManager.playWin(); // WHOOSH
-                }
-
-                // Standard "Void" fall death check (fallback if glitch)
-                if (camera.position.y < -10) {
-                    if (exitStateRef.current === 'NONE') completeMaze();
-                }
-                isGrounded = false;
-            } else {
-                if (camera.position.y < SETTINGS.PLAYER_HEIGHT) {
-                velocity.y = 0;
-                camera.position.y = SETTINGS.PLAYER_HEIGHT;
-                isGrounded = true;
+          // 3. Physics & Collision (Only if not exiting AND NOT IN VENT)
+          if (!inVent) {
+              velocity.x -= velocity.x * 10.0 * delta;
+              velocity.z -= velocity.z * 10.0 * delta;
+              velocity.y -= SETTINGS.GRAVITY * delta; 
+              direction.z = Number(moveForward) - Number(moveBackward);
+              direction.x = Number(moveRight) - Number(moveLeft);
+              direction.normalize();
+              const isMovingLongitudinally = moveForward || moveBackward;
+              const speed = isMovingLongitudinally ? SETTINGS.SPEED_WALK : 3.5;
+              if (moveForward || moveBackward) velocity.z -= direction.z * speed * 10.0 * delta;
+              if (moveLeft || moveRight) velocity.x -= direction.x * speed * 10.0 * delta;
+              controls.moveRight(-velocity.x * delta);
+              controls.moveForward(-velocity.z * delta);
+              
+              if (mazeDataRef.current) {
+                const pos = camera.position.clone();
+                const corrected = CollisionDetector.resolveCollision(
+                    pos, 
+                    mazeDataRef.current.grid, 
+                    mazeDataRef.current.size,
+                    extraCollidersRef.current // Pass Pit Walls
+                );
+                camera.position.x = corrected.x;
+                camera.position.z = corrected.z;
+                
+                const gx = Math.round(corrected.x / SETTINGS.UNIT_SIZE);
+                const gz = Math.round(corrected.z / SETTINGS.UNIT_SIZE);
+                const cell = mazeDataRef.current.grid[gz]?.[gx];
+                if (cell === 2) {
+                    if (camera.position.y < FALL_TRIGGER_Y && exitStateRef.current === 'NONE') {
+                        exitStateRef.current = 'PAUSED';
+                        exitStartTimeRef.current = performance.now();
+                        finalTimeRef.current = timeSpentRef.current; // FREEZE TIMER
+                        velocity.set(0, 0, 0); 
+                        audioManager.playWin(); // WHOOSH
+                    }
+                    if (camera.position.y < -10) {
+                        if (exitStateRef.current === 'NONE') completeMaze();
+                    }
+                    isGrounded = false;
                 } else {
-                isGrounded = false;
+                    if (camera.position.y < SETTINGS.PLAYER_HEIGHT) {
+                        velocity.y = 0;
+                        camera.position.y = SETTINGS.PLAYER_HEIGHT;
+                        isGrounded = true;
+                    } else {
+                        isGrounded = false;
+                    }
                 }
-            }
+              }
+              camera.position.y += velocity.y * delta;
           }
-          camera.position.y += velocity.y * delta;
       }
 
       // 1. EXPLORATION TRACKING
@@ -671,7 +744,7 @@ const GameContent: React.FC = () => {
           playerExploredRef.current.add(`${cx},${cz}`);
       }
 
-      // 2. RECORDING (Stop recording if exiting to prevent weird replay tail)
+      // 2. RECORDING
       if (exitStateRef.current === 'NONE') {
           // Track event phase changes
           const evState = eventSystem.update(delta);
@@ -696,7 +769,6 @@ const GameContent: React.FC = () => {
               s: selectedSlot, 
               b: battery,
               f: evState.flashlightOn,
-              // New Fields
               ib: evState.isBlackout,
               if: evState.phase === EventPhase.FLICKERING || evState.phase === EventPhase.RESTORING,
               im: mapVisible,
@@ -705,7 +777,6 @@ const GameContent: React.FC = () => {
             });
           }
 
-          // Events & Lighting Update
           setIsBlackout(evState.isBlackout);
           setBattery(evState.battery);
           
@@ -717,7 +788,6 @@ const GameContent: React.FC = () => {
               flashlight.intensity = 0;
           }
 
-          // Update Fog/Visuals
           if (scene.fog && scene.fog instanceof THREE.FogExp2) {
               if (evState.isBlackout) {
                   if (scene.fog.color.getHex() !== 0x000000) scene.fog.color.setHex(0x000000);
@@ -732,7 +802,6 @@ const GameContent: React.FC = () => {
               }
           }
           
-          // Culling
           const pPos = camera.position;
           const targetIntensity = 5.0 * evState.intensityMultiplier;
           for (let i = 0; i < pointLights.length; i++) {
@@ -748,18 +817,17 @@ const GameContent: React.FC = () => {
       }
 
       // FOOTSTEP LOGIC
-      // Accumulate distance moved and trigger sound every ~2.4 meters (cadence)
-      const speedMag = Math.sqrt(velocity.x*velocity.x + velocity.z*velocity.z);
-      if (isGrounded && speedMag > 0.5) {
-         footstepDistRef.current += speedMag * delta;
-         // Stride length ~ 2.4 units for the current speed feels right for audio
-         if (footstepDistRef.current > 2.4) {
-            audioManager.playFootstep();
-            footstepDistRef.current = 0;
-         }
-      } else {
-         // Reset accumulator if stopped so next step doesn't play immediately upon moving
-         if (!isGrounded) footstepDistRef.current = 0;
+      if (!inVent) {
+          const speedMag = Math.sqrt(velocity.x*velocity.x + velocity.z*velocity.z);
+          if (isGrounded && speedMag > 0.5) {
+             footstepDistRef.current += speedMag * delta;
+             if (footstepDistRef.current > 2.4) {
+                audioManager.playFootstep();
+                footstepDistRef.current = 0;
+             }
+          } else {
+             if (!isGrounded) footstepDistRef.current = 0;
+          }
       }
 
       updateMiniMap();
@@ -771,7 +839,7 @@ const GameContent: React.FC = () => {
        renderer.render(scene, camera);
     }
 
-  }, [gameState, replayTime, replayPaused, replaySpeed, selectedSlot, battery, markerCount, mapVisible, currentMaze]); 
+  }, [gameState, replayTime, replayPaused, replaySpeed, selectedSlot, battery, markerCount, mapVisible, currentMaze, inVent]); 
 
   useEffect(() => {
     requestIdRef.current = requestAnimationFrame(animate);
@@ -783,12 +851,18 @@ const GameContent: React.FC = () => {
 
   const startNewGame = (seed: string, difficulty: Difficulty, savedState?: SavedMaze, customName?: string) => {
     try {
-        // Reset Exit State
         setExitOpacity(0);
         exitStateRef.current = 'NONE';
         exitStartTimeRef.current = 0;
         finalTimeRef.current = 0;
-        footstepDistRef.current = 0; // Reset footstep cadence
+        footstepDistRef.current = 0;
+        
+        // Reset Vent State
+        setInVent(false);
+        preVentPositionRef.current = null;
+        preVentRotationRef.current = null;
+        ventLockDirectionRef.current = null;
+        setInteractionPrompt(null);
 
         // Reset or Restore Event System
         if (savedState && savedState.eventState) {
@@ -829,13 +903,13 @@ const GameContent: React.FC = () => {
         pointLights = built.lights; 
         interactableObjects = built.collisionMeshes;
         lightPanelMaterialRef.current = built.lightPanelMaterial;
-        extraCollidersRef.current = built.extraColliders; // STORE PIT WALLS
+        extraCollidersRef.current = built.extraColliders; 
+        ventObjects = built.ventMeshes; // Store vent meshes for interaction
         
         markers = [];
         markersDataRef.current = [];
 
-        // FORCE LIGHTING RESET (Fix for black screen bug)
-        // Explicitly set normal visual state immediately after build
+        // FORCE LIGHTING RESET
         if (scene.fog instanceof THREE.FogExp2) {
             scene.fog.color.set(COLORS.FOG);
             scene.fog.density = 0.015;
@@ -843,16 +917,14 @@ const GameContent: React.FC = () => {
         if (lightPanelMaterialRef.current) {
             lightPanelMaterialRef.current.color.set(COLORS.LIGHT_EMISSIVE);
         }
-        // Force all lights visible and full intensity
         pointLights.forEach(l => {
             l.visible = true;
             l.intensity = 5;
         });
-        setIsBlackout(false); // Sync React state
+        setIsBlackout(false); 
 
         // --- REPLAY MODE CHECK ---
         if (savedState && savedState.completed && savedState.recording) {
-            // ... (Replay setup unchanged) ...
             setGameState(GameState.REPLAY);
             setCurrentMaze(savedState);
             loadedReplayRef.current = savedState.recording;
@@ -866,13 +938,9 @@ const GameContent: React.FC = () => {
                 if (f.q) camera.quaternion.set(f.q.x, f.q.y, f.q.z, f.q.w);
                 else camera.rotation.set(f.r.x, f.r.y, f.r.z);
             }
-
-            // LOAD MARKERS FOR REPLAY MAP
-            // Populate markersDataRef with ALL saved markers for map visibility
             if (savedState.markers) {
                 markersDataRef.current = savedState.markers;
             }
-
             if (controlsRef.current) controlsRef.current.unlock();
             return;
         }
@@ -905,7 +973,6 @@ const GameContent: React.FC = () => {
 
           if (savedState.visited) playerExploredRef.current = new Set(savedState.visited);
 
-          // RESTORE COOLDOWN & MAP STATE
           mapCooldownRef.current = savedState.mapCooldownRemaining || 0;
           setMapCooldown(mapCooldownRef.current);
           
@@ -927,7 +994,6 @@ const GameContent: React.FC = () => {
           
           const existing = Persistence.getMazes();
           const nextNum = existing.length + 1;
-          // Auto-name logic
           const mazeName = customName && customName.trim().length > 0 ? customName.trim() : `Maze #${nextNum}`;
 
           const newMaze: SavedMaze = {
@@ -950,15 +1016,12 @@ const GameContent: React.FC = () => {
             isMapOpen: false
           };
 
-          // ADDED: Immediate save so the record exists even if game crashes/exits improperly
           Persistence.saveMaze(newMaze);
           setCurrentMaze(newMaze);
           
           setTimeSpent(0);
           timeSpentRef.current = 0;
           setMarkerCount(20);
-          
-          // Reset Cooldown
           mapCooldownRef.current = 0;
           setMapCooldown(0);
           setMapVisible(false);
@@ -980,7 +1043,6 @@ const GameContent: React.FC = () => {
           });
         }
 
-        // Sync Battery and Event UI State immediately
         const initialEv = eventSystem.getState();
         setBattery(initialEv.battery);
         setIsBlackout(initialEv.isBlackout);
@@ -996,7 +1058,6 @@ const GameContent: React.FC = () => {
   };
 
   const handleRegenerate = (oldMaze: SavedMaze) => {
-    // ... (unchanged)
     const data = generateMaze(oldMaze.seed, oldMaze.difficulty);
     const sx = data.start.x * SETTINGS.UNIT_SIZE;
     const sz = data.start.y * SETTINGS.UNIT_SIZE;
@@ -1012,17 +1073,16 @@ const GameContent: React.FC = () => {
         visited: [],
         recording: undefined,
         finalTimerMs: undefined,
-        mapCooldownRemaining: 0, // Reset cooldown
+        mapCooldownRemaining: 0,
         mapViewRemaining: 0,
         isMapOpen: false,
-        eventState: undefined // Reset events
+        eventState: undefined 
     };
     Persistence.saveMaze(resetMaze);
     startNewGame(resetMaze.seed.toString(), resetMaze.difficulty, resetMaze);
   };
 
   const createMarkerMesh = (pos: THREE.Vector3, normal: THREE.Vector3) => {
-      // ... (unchanged)
       if (!markerGeometryRef.current || !markerMaterialRef.current) return;
       const mesh = new THREE.Mesh(markerGeometryRef.current, markerMaterialRef.current);
       mesh.position.copy(pos);
@@ -1032,7 +1092,6 @@ const GameContent: React.FC = () => {
   };
 
   const placeMarker = () => {
-     // ... (unchanged)
      if (markerCount <= 0) return;
      raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
      const intersects = raycaster.intersectObjects(interactableObjects);
@@ -1058,8 +1117,6 @@ const GameContent: React.FC = () => {
   };
 
   const updateMiniMap = () => {
-     // ONLY render if mapVisible is true and not blacked out
-     // Also force render if it was just opened (mapNeedsUpdateRef)
      if (!mapVisible || isBlackout) return;
      if (!mapCanvasRef.current || !mazeDataRef.current) return;
      if (!mapNeedsUpdateRef.current && gameState !== GameState.REPLAY) return;
@@ -1068,7 +1125,6 @@ const GameContent: React.FC = () => {
      if (!ctx) return;
 
      const size = mazeDataRef.current.size;
-     // ... (Render logic mostly unchanged, just ensured it runs for visible state) ...
      const cx = Math.round(camera.position.x / SETTINGS.UNIT_SIZE);
      const cz = Math.round(camera.position.z / SETTINGS.UNIT_SIZE);
      
@@ -1088,7 +1144,6 @@ const GameContent: React.FC = () => {
      markersDataRef.current.forEach(m => {
         const mx = Math.round(m.x / SETTINGS.UNIT_SIZE);
         const mz = Math.round(m.z / SETTINGS.UNIT_SIZE);
-        // RED MARKER COLOR for distinct visibility
         ctx.fillStyle = '#FF0000'; 
         if (cellSize < 4) {
             ctx.fillRect(mx * cellSize, mz * cellSize, cellSize, cellSize);
@@ -1105,13 +1160,11 @@ const GameContent: React.FC = () => {
      mapNeedsUpdateRef.current = false;
   };
 
-  // Updated completion handler to accept override time
   const completeMaze = (finalTimeOverride?: number) => {
     const finalTime = finalTimeOverride ?? timeSpentRef.current;
     const quat = camera.quaternion;
     const evState = eventSystem.getState();
 
-    // Force one last frame to capture the final position (mid-fall)
     const finalFrames = [...recordingFramesRef.current];
     finalFrames.push({
         t: finalTime, 
@@ -1130,7 +1183,6 @@ const GameContent: React.FC = () => {
     
     let thumb = '';
     if (renderer) {
-      // OPTIMIZATION: Use JPEG 0.5 instead of PNG for completion thumbnail too
       try {
         renderer.render(scene, camera);
         thumb = renderer.domElement.toDataURL('image/jpeg', 0.5); 
@@ -1138,23 +1190,21 @@ const GameContent: React.FC = () => {
     }
     
     if (currentMaze) {
-       // EXPLICIT SYNC for completion save
        const finished: SavedMaze = { 
          ...currentMaze, 
          completed: true, 
          timeSpent: finalTime, 
          finalTimerMs: finalTime,
          thumbnail: thumb,
-         // Sync latest state
          playerPos: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
          playerRot: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z },
          remainingMarkers: markerCount,
          markers: markersDataRef.current,
          visited: Array.from(playerExploredRef.current),
-         mapCooldownRemaining: 0, // Reset cooldown on completion
+         mapCooldownRemaining: 0,
          mapViewRemaining: 0,
          isMapOpen: false,
-         eventState: eventSystem.getPersistenceState(), // Capture state even on completion
+         eventState: eventSystem.getPersistenceState(),
          recording: {
              frames: finalFrames,
              events: recordingEventsRef.current,
@@ -1164,21 +1214,18 @@ const GameContent: React.FC = () => {
        Persistence.saveMaze(finished);
        setCurrentMaze(finished);
 
-       // DIRECT REPLAY TRANSITION
        loadedReplayRef.current = finished.recording!;
        setReplayDuration(finalTime);
        setReplayTime(0);
        setReplayPaused(false);
        setReplaySpeed(1);
 
-       // Reset Visuals
        setExitOpacity(0);
        exitStateRef.current = 'NONE';
        
        setGameState(GameState.REPLAY);
        controlsRef.current?.unlock();
 
-       // Init Replay Cam
        if (finalFrames.length > 0) {
            const f = finalFrames[0];
            camera.position.set(f.p.x, f.p.y, f.p.z);
@@ -1189,44 +1236,29 @@ const GameContent: React.FC = () => {
   };
 
   const handleLeaveWorld = () => {
-     // 1. Unconditional Save Attempt (if data exists and playing)
      if (currentMaze) {
-        // Only save progress if we are in a state where progress is being made
         if (gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.GENERATING) {
             let thumb = currentMaze.thumbnail;
             if (renderer) {
                 try {
                     renderer.render(scene, camera); 
-                    // OPTIMIZATION: Use JPEG 0.5 instead of PNG (approx 10x smaller)
                     thumb = renderer.domElement.toDataURL('image/jpeg', 0.5); 
                 } catch(e) { console.warn("Thumbnail capture failed", e); }
             }
             
-            // EXPLICIT RUNTIME SYNC:
             const saveState: SavedMaze = { 
                 ...currentMaze, 
-                // Sync Time
                 timeSpent: timeSpentRef.current,
-                
-                // Sync Visuals
                 thumbnail: thumb,
-                
-                // Sync Position & Rotation
                 playerPos: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
                 playerRot: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z },
-                
-                // Sync Gameplay Items
                 remainingMarkers: markerCount,
                 markers: markersDataRef.current, 
                 visited: Array.from(playerExploredRef.current),
                 mapCooldownRemaining: mapCooldownRef.current,
                 mapViewRemaining: mapViewTimerRef.current,
                 isMapOpen: mapVisible,
-                
-                // Sync Event State 
                 eventState: eventSystem.getPersistenceState(),
-
-                // Add Recording State
                 recording: {
                     frames: recordingFramesRef.current,
                     events: recordingEventsRef.current,
@@ -1234,32 +1266,24 @@ const GameContent: React.FC = () => {
                 }
             };
             
-            // TIERED SAVE STRATEGY
-            // 1. Try Full Save
             try {
                 Persistence.saveMaze(saveState);
                 setCurrentMaze(saveState);
             } catch (err1) {
                 console.warn("Primary save failed (Quota). Retrying without Recording...", err1);
-                
-                // 2. Try Save without Recording (Heavy data)
                 const fallbackState1: SavedMaze = { 
                     ...saveState, 
                     recording: { frames: [], events: [], totalTime: saveState.timeSpent } 
                 };
-
                 try {
                     Persistence.saveMaze(fallbackState1);
                     setCurrentMaze(fallbackState1);
                 } catch (err2) {
                      console.warn("Fallback save failed (Quota). Retrying without Thumbnail...", err2);
-                     
-                     // 3. Try Save without Thumbnail (Image data)
                      const fallbackState2: SavedMaze = {
                          ...fallbackState1,
-                         thumbnail: '' // Drop image
+                         thumbnail: '' 
                      };
-
                      try {
                          Persistence.saveMaze(fallbackState2);
                          setCurrentMaze(fallbackState2);
@@ -1272,7 +1296,6 @@ const GameContent: React.FC = () => {
         }
      }
 
-     // 2. Unconditional Navigation
      if (controlsRef.current) {
          try { controlsRef.current.unlock(); } catch(e) {}
      }
@@ -1317,6 +1340,10 @@ const GameContent: React.FC = () => {
 
         // Exit Props
         exitOpacity={exitOpacity}
+
+        // Vent Props
+        interactionPrompt={interactionPrompt}
+        inVent={inVent}
       />
     </div>
   );

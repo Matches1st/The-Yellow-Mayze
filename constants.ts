@@ -8,7 +8,9 @@ export const ASSETS = {
   textures: {
     wall: 'procedural_wall', // Handled by procedural generator
     floor: 'procedural_floor',
-    particle: 'https://assets.codepen.io/127738/dot_texture.png'
+    particle: 'https://assets.codepen.io/127738/dot_texture.png',
+    vent_grate: 'https://i.imgur.com/8QjZ9kP.png',
+    vent_internal: 'procedural_vent_internal' // Handled by overlay logic
   },
   sounds: {
     hum: 'https://assets.mixkit.co/active_storage/sfx/2658/2658-preview.mp3', // Steady Fluorescent Hum

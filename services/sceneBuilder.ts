@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { GridCell } from '../types';
 import { SETTINGS, COLORS } from '../constants';
-import { createProceduralMaterial } from './threeHelpers';
+import { createProceduralMaterial, createVentMaterial } from './threeHelpers';
 
 export const buildScene = (
   scene: THREE.Scene, 
@@ -19,6 +19,9 @@ export const buildScene = (
   const ceilingMat = createProceduralMaterial('ceiling');
   const emissiveMat = new THREE.MeshBasicMaterial({ color: COLORS.LIGHT_EMISSIVE }); 
   
+  // Vent Material Array (Multi-material for BoxGeometry)
+  const ventMaterials = createVentMaterial(wallMat);
+
   // Void Pit Materials (Illusory Infinite Pit)
   const voidBottomMat = new THREE.MeshStandardMaterial({ 
     color: 0xFFFFFF, 
@@ -37,16 +40,29 @@ export const buildScene = (
   const ceilGeo = new THREE.PlaneGeometry(unit, unit); // Ceiling
   const lightPanelGeo = new THREE.PlaneGeometry(1, 1); 
 
+  // Composite Wall Parts (for Vent Cells)
+  // Wall is 3x3x3.
+  // Vent is 1x1x1 at bottom center face.
+  // We need to fill the rest.
+  // Top Part: 3 wide, 2 high, 3 deep.
+  const topPartGeo = new THREE.BoxGeometry(unit, 2, unit); 
+  // Side Columns: 1 wide, 1 high, 3 deep.
+  const sidePartGeo = new THREE.BoxGeometry(1, 1, unit);
+  // Rear Fill: 1 wide, 1 high, 2 deep (behind vent).
+  const rearPartGeo = new THREE.BoxGeometry(1, 1, 2);
+  // Vent Mesh: 1x1x1
+  const ventGeo = new THREE.BoxGeometry(1, 1, 1);
+
   // Pit Geometries
-  // PRECISE DEPTH REDUCTION: 2.5 Units deep
   const pitDepth = 2.5; 
-  const pitWallHeight = 2.7; // 2.5 + 0.2 overlap to seal edges
+  const pitWallHeight = 2.7; 
   const thickness = 1;
   const pitWallGeo = new THREE.BoxGeometry(unit, pitWallHeight, thickness);
-  const pitBottomGeo = new THREE.PlaneGeometry(unit, unit); // Exact 3x3 size (1 unit x 1 unit scale)
+  const pitBottomGeo = new THREE.PlaneGeometry(unit, unit); 
 
   // Collision Boxes for Pit Walls
   const extraColliders: THREE.Box3[] = [];
+  const ventMeshes: THREE.Mesh[] = [];
 
   // Count instances
   let wallCount = 0;
@@ -62,10 +78,8 @@ export const buildScene = (
         floorCount++;
         if (r % 4 === 1 && c % 4 === 1) lightCount++;
       } else {
-        // Void cell (2):
-        // Needs Ceiling (to cover the hole from top)
+        // Void cell (2)
         floorCount++;
-        // Needs Light (to make exit room bright)
         lightCount++;
       }
     }
@@ -91,6 +105,8 @@ export const buildScene = (
   const dummy = new THREE.Object3D();
   const lights: THREE.PointLight[] = [];
 
+  let verticalWallSegmentsCount = 0;
+
   for(let r=0; r<size; r++) {
     for(let c=0; c<size; c++) {
       const x = c * unit;
@@ -98,11 +114,90 @@ export const buildScene = (
 
       if (grid[r][c] === 1) {
         // --- WALL ---
-        dummy.position.set(x, h/2, z);
-        dummy.rotation.set(0, 0, 0);
-        dummy.scale.set(1, 1, 1);
-        dummy.updateMatrix();
-        wallMesh.setMatrixAt(wIdx++, dummy.matrix);
+        
+        // VENT CHECK
+        // Must border a floor to be visible/usable.
+        let isCandidate = false;
+        let rotationY = 0; // Default
+
+        // Check neighbors for path (0). Face vent towards path.
+        // Priority: North, South, West, East (arbitrary, picking first valid)
+        if (r > 0 && grid[r-1][c] === 0) { isCandidate = true; rotationY = Math.PI; } // Face North (backwards Z) -> Rot 180?
+        // Wait, default BoxGeometry Front is +Z.
+        // If (r-1, c) is path, that is -Z direction.
+        // So we want Front (+Z) to rotate 180 to face -Z. Yes.
+        else if (r < size-1 && grid[r+1][c] === 0) { isCandidate = true; rotationY = 0; } // Face South (+Z). No rot.
+        else if (c > 0 && grid[r][c-1] === 0) { isCandidate = true; rotationY = -Math.PI/2; } // Face West (-X). Rot -90.
+        else if (c < size-1 && grid[r][c+1] === 0) { isCandidate = true; rotationY = Math.PI/2; } // Face East (+X). Rot 90.
+        
+        let isVent = false;
+        if (isCandidate) {
+            verticalWallSegmentsCount++;
+            if (verticalWallSegmentsCount % 50 === 0) {
+                isVent = true;
+            }
+        }
+
+        if (!isVent) {
+            // Standard Wall
+            dummy.position.set(x, h/2, z);
+            dummy.rotation.set(0, 0, 0);
+            dummy.scale.set(1, 1, 1);
+            dummy.updateMatrix();
+            wallMesh.setMatrixAt(wIdx++, dummy.matrix);
+        } else {
+            // SPECIAL VENT WALL
+            // Hide the instance by scaling to 0 (keeps index sync logic simple)
+            dummy.scale.set(0, 0, 0);
+            dummy.updateMatrix();
+            wallMesh.setMatrixAt(wIdx++, dummy.matrix);
+
+            // Create Composite Geometry
+            // We use a group centered at the cell center (x, 0, z)
+            const group = new THREE.Group();
+            group.position.set(x, 0, z);
+            
+            // Apply rotation so +Z aligns with the open corridor
+            group.rotation.y = rotationY;
+
+            // 1. Top Part (3w x 2h x 3d). Position: y=2 (1 unit gap below)
+            const topPart = new THREE.Mesh(topPartGeo, wallMat);
+            topPart.position.set(0, 2, 0); 
+            topPart.castShadow = true; topPart.receiveShadow = true;
+            group.add(topPart);
+
+            // 2. Side Parts (1w x 1h x 3d).
+            // Left (-1) and Right (+1). Y=0.5 (bottom unit)
+            const leftPart = new THREE.Mesh(sidePartGeo, wallMat);
+            leftPart.position.set(-1, 0.5, 0);
+            leftPart.castShadow = true; leftPart.receiveShadow = true;
+            group.add(leftPart);
+
+            const rightPart = new THREE.Mesh(sidePartGeo, wallMat);
+            rightPart.position.set(1, 0.5, 0);
+            rightPart.castShadow = true; rightPart.receiveShadow = true;
+            group.add(rightPart);
+
+            // 3. Vent Mesh (1w x 1h x 1d). At Center Front (+1 z-offset? No, +1 unit from center? No)
+            // Wall is 3 deep. Z goes -1.5 to +1.5.
+            // Front face is roughly +1.5. 
+            // Vent is 1 deep. Center at +1.0. Range +0.5 to +1.5.
+            const vent = new THREE.Mesh(ventGeo, ventMaterials);
+            vent.position.set(0, 0.5, 1.0); 
+            vent.castShadow = true;
+            group.add(vent);
+            ventMeshes.push(vent);
+
+            // 4. Rear Fill (1w x 1h x 2d). Fills space behind vent (-0.5 to -1.5? range -1.5 to +0.5)
+            // Center at -0.5.
+            const rearPart = new THREE.Mesh(rearPartGeo, wallMat);
+            rearPart.position.set(0, 0.5, -0.5);
+            rearPart.castShadow = true; rearPart.receiveShadow = true;
+            group.add(rearPart);
+
+            mazeGroup.add(group);
+        }
+
       } else {
         // --- PATH (Floor + Ceiling or Void) ---
         
@@ -141,24 +236,18 @@ export const buildScene = (
 
         } else {
            // --- VOID PIT GENERATION ---
-           // The hole in the floor.
-           
-           // 1. CEILING (Add ceiling over the pit so it looks like a room)
            dummy.position.set(x, h, z);
-           dummy.rotation.set(Math.PI/2, 0, 0); // Face Down
+           dummy.rotation.set(Math.PI/2, 0, 0); 
            dummy.scale.set(1, 1, 1);
            dummy.updateMatrix();
            ceilingMesh.setMatrixAt(fIdx, dummy.matrix);
            
-           // Note: We DO NOT add floorMesh here, leaving the hole open.
-           // Since fIdx counts both, we must skip the floor but consume the index for ceiling.
-           // We hide the floor mesh by scaling to 0.
+           // Hide Floor
            dummy.scale.set(0, 0, 0);
            floorMesh.setMatrixAt(fIdx, dummy.matrix);
-           
            fIdx++;
 
-           // 2. LIGHTS (Always add light above the pit for visibility)
+           // Light
            dummy.position.set(x, h - 0.05, z);
            dummy.rotation.set(Math.PI/2, 0, 0); 
            dummy.scale.set(1, 1, 1);
@@ -172,54 +261,45 @@ export const buildScene = (
            lightGroup.add(pl);
            lights.push(pl);
 
-           // 3. PIT WALLS (Underground)
-           const offset = unit/2 + thickness/2; // 2.0
-           const wallY = -pitWallHeight / 2; // Center Y = -1.35 (Top at 0, Bottom at -2.7)
+           // Pit Walls
+           const offset = unit/2 + thickness/2; 
+           const wallY = -pitWallHeight / 2; 
 
            const addCollider = (cx: number, cz: number, width: number, depth: number) => {
                const box = new THREE.Box3();
-               // MaxY = 0 ensures player can walk ON floor (y>0) without hitting these walls
                box.min.set(cx - width/2, -pitWallHeight, cz - depth/2);
                box.max.set(cx + width/2, 0, cz + depth/2); 
                extraColliders.push(box);
            };
 
-           // North Wall (Z-)
            const nWall = new THREE.Mesh(pitWallGeo, wallMat);
            nWall.position.set(x, wallY, z - offset);
            mazeGroup.add(nWall);
            addCollider(x, z - offset, unit, thickness);
            
-           // South Wall (Z+)
            const sWall = new THREE.Mesh(pitWallGeo, wallMat);
            sWall.position.set(x, wallY, z + offset);
            mazeGroup.add(sWall);
            addCollider(x, z + offset, unit, thickness);
 
-           // East Wall (X+)
            const eWall = new THREE.Mesh(pitWallGeo, wallMat);
            eWall.position.set(x + offset, wallY, z);
            eWall.rotation.y = Math.PI / 2;
            mazeGroup.add(eWall);
            addCollider(x + offset, z, thickness, unit);
 
-           // West Wall (X-)
            const wWall = new THREE.Mesh(pitWallGeo, wallMat);
            wWall.position.set(x - offset, wallY, z);
            wWall.rotation.y = Math.PI / 2;
            mazeGroup.add(wWall);
            addCollider(x - offset, z, thickness, unit);
 
-           // Glowing Bottom Plane
-           // Positioned exactly at -2.5
            const bottom = new THREE.Mesh(pitBottomGeo, voidBottomMat);
            bottom.position.set(x, -pitDepth, z); 
            bottom.rotation.x = -Math.PI / 2; 
            bottom.receiveShadow = false; 
            mazeGroup.add(bottom);
 
-           // Upward Bloom Light (Bottom of pit)
-           // Positioned slightly above bottom to light the shaft
            const pitLight = new THREE.PointLight(0xFFFFFF, 3, 15, 2);
            pitLight.position.set(x, -2.0, z); 
            lightGroup.add(pitLight);
@@ -242,6 +322,7 @@ export const buildScene = (
       lightGroup, 
       lights, 
       collisionMeshes: [wallMesh], 
+      ventMeshes,
       lightPanelMaterial: emissiveMat,
       extraColliders // Return generated AABBs for collision detector
   };
