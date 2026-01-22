@@ -1,0 +1,5 @@
+{
+  "name": "Mayze",
+  "description": "A high-fidelity, grid-based horror exploration game using Three.js and React. Features procedural generation, persistent saves, dynamic lighting, and immersive audio.",
+  "requestFramePermissions": []
+}
