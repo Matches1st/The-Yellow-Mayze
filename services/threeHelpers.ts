@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORS, ASSETS } from '../constants';
+import { COLORS } from '../constants';
 
 // Helper to create noise texture
 const createNoiseTexture = (width: number, height: number, opacity: number = 0.2) => {
@@ -120,28 +120,3 @@ export const createProceduralMaterial = (type: 'wall' | 'floor' | 'ceiling') => 
 
   return material;
 }
-
-export const createVentMaterial = (wallMat: THREE.Material) => {
-  const loader = new THREE.TextureLoader();
-  const ventTex = loader.load(ASSETS.textures.vent_grate);
-  ventTex.colorSpace = THREE.SRGBColorSpace;
-
-  const ventFaceMat = new THREE.MeshStandardMaterial({
-      map: ventTex,
-      roughness: 0.4,
-      metalness: 0.6,
-      color: 0x888888 
-  });
-
-  // Box materials: [Right, Left, Top, Bottom, Front, Back]
-  // We assume Front (+Z) is the vent face.
-  // We clone wallMat to ensure it handles light individually if needed, though referencing is fine.
-  return [
-      wallMat, // Right
-      wallMat, // Left
-      wallMat, // Top
-      wallMat, // Bottom
-      ventFaceMat, // Front (+Z)
-      wallMat  // Back
-  ];
-};

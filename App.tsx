@@ -102,7 +102,7 @@ const GameContent: React.FC = () => {
 
   // EXIT SEQUENCE STATE
   const [exitOpacity, setExitOpacity] = useState(0);
-  // NONE -> PAUSED (Suspend mid-air) -> FADING (White/Black screen) -> FINISHED
+  // NONE -> PAUSED (Suspend mid-air) -> FADING (White screen) -> FINISHED
   const exitStateRef = useRef<'NONE' | 'PAUSED' | 'FADING' | 'FINISHED'>('NONE');
   const exitStartTimeRef = useRef(0);
   const finalTimeRef = useRef(0);
@@ -167,6 +167,8 @@ const GameContent: React.FC = () => {
   const lockControls = useCallback(() => {
       const c = controlsRef.current;
       if (c && !c.isLocked) {
+          // Safety: Check if already locked in DOM to prevent "exited before request completed" errors
+          if (document.pointerLockElement === mountRef.current) return;
           try {
               c.lock();
           } catch (e) {
@@ -192,6 +194,7 @@ const GameContent: React.FC = () => {
       audioManager.playMapOpen();
       mapNeedsUpdateRef.current = true; // Force render
 
+      // Log Event for Replay
       recordingEventsRef.current.push({
           type: 'MAP_OPEN',
           t: timeSpentRef.current
@@ -243,35 +246,45 @@ const GameContent: React.FC = () => {
   useEffect(() => {
     if (!mountRef.current) return;
 
+    // 1. Scene Setup
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000); 
     scene.fog = new THREE.FogExp2(COLORS.FOG, 0.015);
 
+    // CRITICAL FIX: Unconditional Ambient Light
+    // Prevents black screen if dynamic lights fail to generate or load
     const ambientFallback = new THREE.AmbientLight(0xFFFFFF, 0.1);
     scene.add(ambientFallback);
 
+    // 2. Camera
     camera = new THREE.PerspectiveCamera(options.fov, window.innerWidth / window.innerHeight, 0.1, 100);
     
+    // 3. Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     mountRef.current.appendChild(renderer.domElement);
 
+    // 4. Controls
     const controls = new PointerLockControls(camera, mountRef.current);
     controlsRef.current = controls;
 
-    controls.addEventListener('lock', () => {
+    const onLock = () => {
       setGameState(prev => (prev === GameState.REPLAY ? GameState.REPLAY : GameState.PLAYING));
-    });
-    
-    controls.addEventListener('unlock', () => {
+    };
+
+    const onUnlock = () => {
       setGameState(prev => {
         if (prev === GameState.PLAYING) return GameState.PAUSED;
         return prev;
       });
-    });
+    };
 
+    controls.addEventListener('lock', onLock);
+    controls.addEventListener('unlock', onUnlock);
+
+    // 5. Lighting & Flashlight
     flashlight = new THREE.SpotLight(0xFFFFD0, 0, 35, 0.55, 0.5, 2);
     flashlight.position.set(0, 0, 0);
     flashlight.target.position.set(0, 0, -1);
@@ -280,6 +293,7 @@ const GameContent: React.FC = () => {
     camera.add(flashlight.target);
     scene.add(camera);
 
+    // 7. Marker Assets Init
     const cvs = document.createElement('canvas'); cvs.width=64; cvs.height=64;
     const ctx = cvs.getContext('2d')!;
     ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 10;
@@ -296,6 +310,7 @@ const GameContent: React.FC = () => {
     });
     markerGeometryRef.current = new THREE.PlaneGeometry(0.6, 0.6);
 
+    // 8. Event Listeners
     const handleResize = () => {
       if (!camera || !renderer) return;
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -308,6 +323,8 @@ const GameContent: React.FC = () => {
       window.removeEventListener('resize', handleResize);
       if (mountRef.current) mountRef.current.innerHTML = '';
       cancelAnimationFrame(requestIdRef.current!);
+      controls.removeEventListener('lock', onLock);
+      controls.removeEventListener('unlock', onUnlock);
       controls.dispose();
       controlsRef.current = null;
       if (markerMaterialRef.current) markerMaterialRef.current.dispose();
@@ -322,16 +339,23 @@ const GameContent: React.FC = () => {
         camera.fov = options.fov;
         camera.updateProjectionMatrix();
     }
+    
+    // APPLY MOUSE SENSITIVITY
     if (controlsRef.current) {
+        // PointerLockControls has a .pointerSpeed property (default 1.0)
+        // We map the 0.1 - 5.0 slider directly to this multiplier.
         controlsRef.current.pointerSpeed = options.mouseSensitivity;
     }
+
     audioManager.setMasterVolume(options.masterVolume);
   }, [options]);
 
+  // Force map redraw on Slot or State change
   useEffect(() => {
     mapNeedsUpdateRef.current = true;
   }, [selectedSlot, gameState, mapVisible]);
 
+  // Handle Ambience Pausing
   useEffect(() => {
     if (gameState === GameState.PAUSED) {
         audioManager.pauseAmbience();
@@ -391,21 +415,29 @@ const GameContent: React.FC = () => {
         case 'KeyD': moveRight = false; break;
       }
     };
+    
     const onMouseDown = (e: MouseEvent) => {
       if (gameState === GameState.REPLAY) return;
+
       const controls = controlsRef.current;
       if (!controls) return;
+
       if (gameState !== GameState.PLAYING) return;
+      
+      // Safety check: Don't try to lock if already locked or transitioning
       if (e.button === 0 && !controls.isLocked) {
         lockControls();
       }
+      
       if (e.button === 2 && selectedSlot === 2 && markerCount > 0 && !inVent) {
         placeMarker();
       }
     };
+
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousedown', onMouseDown);
+
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
@@ -464,7 +496,7 @@ const GameContent: React.FC = () => {
                 setMapVisible(f.im);
                 setMapCooldown(f.cr);
                 setExposureTime(f.et || 0);
-                setIsDead(!!currentMaze?.died); // In replay, status is static based on maze data
+                setIsDead(!!currentMaze?.died); 
 
                 flashlight.intensity = f.f ? 6 : 0;
 
@@ -483,7 +515,6 @@ const GameContent: React.FC = () => {
                       if (lightPanelMaterialRef.current) lightPanelMaterialRef.current.color.setHex(0x050505);
                       if (markerMaterialRef.current) markerMaterialRef.current.color.setHex(0xFFFFFF); 
                   } else {
-                      // Apply Gas Fog Logic for Replay
                       const gasLevel = f.gl || 0;
                       const targetColor = new THREE.Color(COLORS.FOG).lerp(new THREE.Color(0x660099), gasLevel);
                       const targetDensity = 0.015 + (gasLevel * (0.05 - 0.015));
@@ -732,8 +763,6 @@ const GameContent: React.FC = () => {
                   if (markerMaterialRef.current) markerMaterialRef.current.color.setHex(0xFFFFFF);
               } else {
                   // Normal + Gas Blending
-                  // Target Color: Lerp(Yellow, Purple, gasLevel)
-                  // Target Density: Lerp(0.015, 0.05, gasLevel)
                   const targetColor = new THREE.Color(COLORS.FOG).lerp(new THREE.Color(0x660099), evState.gasLevel);
                   const targetDensity = 0.015 + (evState.gasLevel * (0.05 - 0.015));
                   
@@ -991,8 +1020,18 @@ const GameContent: React.FC = () => {
         setIsBlackout(initialEv.isBlackout);
 
         setGameState(GameState.PLAYING);
-        lockControls();
         audioManager.startAmbience();
+        
+        // Safety lock with delay to prevent race conditions during heavy generation/DOM updates
+        setTimeout(() => {
+            if (controlsRef.current && !controlsRef.current.isLocked) {
+                // Double check validity before locking
+                if (document.pointerLockElement !== mountRef.current) {
+                    try { controlsRef.current.lock(); } catch(e) { console.warn("Init lock failed", e); }
+                }
+            }
+        }, 100);
+
     } catch (error) {
         console.error("Failed to start game:", error);
         alert("A critical error occurred while starting the maze. Please check the console or try regenerating.");
@@ -1078,9 +1117,75 @@ const GameContent: React.FC = () => {
     }
   };
 
-  // ... (Other functions unchanged)
+  const handleLeaveWorld = () => {
+     if (currentMaze) {
+        if (gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.GENERATING) {
+            let thumb = currentMaze.thumbnail;
+            if (renderer) {
+                try {
+                    renderer.render(scene, camera); 
+                    thumb = renderer.domElement.toDataURL('image/jpeg', 0.5); 
+                } catch(e) { console.warn("Thumbnail capture failed", e); }
+            }
+            
+            const saveState: SavedMaze = { 
+                ...currentMaze, 
+                timeSpent: timeSpentRef.current,
+                thumbnail: thumb,
+                playerPos: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+                playerRot: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z },
+                remainingMarkers: markerCount,
+                markers: markersDataRef.current, 
+                visited: Array.from(playerExploredRef.current),
+                mapCooldownRemaining: mapCooldownRef.current,
+                mapViewRemaining: mapViewTimerRef.current,
+                isMapOpen: mapVisible,
+                eventState: eventSystem.getPersistenceState(),
+                recording: {
+                    frames: recordingFramesRef.current,
+                    events: recordingEventsRef.current,
+                    totalTime: timeSpentRef.current
+                }
+            };
+            
+            try {
+                Persistence.saveMaze(saveState);
+                setCurrentMaze(saveState);
+            } catch (err1) {
+                console.warn("Primary save failed (Quota). Retrying without Recording...", err1);
+                const fallbackState1: SavedMaze = { 
+                    ...saveState, 
+                    recording: { frames: [], events: [], totalTime: saveState.timeSpent } 
+                };
+                try {
+                    Persistence.saveMaze(fallbackState1);
+                    setCurrentMaze(fallbackState1);
+                } catch (err2) {
+                     console.warn("Fallback save failed (Quota). Retrying without Thumbnail...", err2);
+                     const fallbackState2: SavedMaze = {
+                         ...fallbackState1,
+                         thumbnail: '' 
+                     };
+                     try {
+                         Persistence.saveMaze(fallbackState2);
+                         setCurrentMaze(fallbackState2);
+                     } catch (err3) {
+                         console.error("Critical Storage Error. Cannot save progress.", err3);
+                         alert("STORAGE FULL: Progress could not be saved. Please delete old mazes.");
+                     }
+                }
+            }
+        }
+     }
 
-  // Need to include handleRegenerate, createMarkerMesh, placeMarker, updateMiniMap, handleLeaveWorld in the full file return
+     if (controlsRef.current) {
+         try { controlsRef.current.unlock(); } catch(e) {}
+     }
+     
+     setGameState(GameState.MENU);
+     audioManager.stopAmbience();
+  };
+
   const handleRegenerate = (oldMaze: SavedMaze) => {
     const data = generateMaze(oldMaze.seed, oldMaze.difficulty);
     const sx = data.start.x * SETTINGS.UNIT_SIZE;
@@ -1185,75 +1290,6 @@ const GameContent: React.FC = () => {
      mapNeedsUpdateRef.current = false;
   };
 
-  const handleLeaveWorld = () => {
-     if (currentMaze) {
-        if (gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.GENERATING) {
-            let thumb = currentMaze.thumbnail;
-            if (renderer) {
-                try {
-                    renderer.render(scene, camera); 
-                    thumb = renderer.domElement.toDataURL('image/jpeg', 0.5); 
-                } catch(e) { console.warn("Thumbnail capture failed", e); }
-            }
-            
-            const saveState: SavedMaze = { 
-                ...currentMaze, 
-                timeSpent: timeSpentRef.current,
-                thumbnail: thumb,
-                playerPos: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-                playerRot: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z },
-                remainingMarkers: markerCount,
-                markers: markersDataRef.current, 
-                visited: Array.from(playerExploredRef.current),
-                mapCooldownRemaining: mapCooldownRef.current,
-                mapViewRemaining: mapViewTimerRef.current,
-                isMapOpen: mapVisible,
-                eventState: eventSystem.getPersistenceState(),
-                recording: {
-                    frames: recordingFramesRef.current,
-                    events: recordingEventsRef.current,
-                    totalTime: timeSpentRef.current
-                }
-            };
-            
-            try {
-                Persistence.saveMaze(saveState);
-                setCurrentMaze(saveState);
-            } catch (err1) {
-                console.warn("Primary save failed (Quota). Retrying without Recording...", err1);
-                const fallbackState1: SavedMaze = { 
-                    ...saveState, 
-                    recording: { frames: [], events: [], totalTime: saveState.timeSpent } 
-                };
-                try {
-                    Persistence.saveMaze(fallbackState1);
-                    setCurrentMaze(fallbackState1);
-                } catch (err2) {
-                     console.warn("Fallback save failed (Quota). Retrying without Thumbnail...", err2);
-                     const fallbackState2: SavedMaze = {
-                         ...fallbackState1,
-                         thumbnail: '' 
-                     };
-                     try {
-                         Persistence.saveMaze(fallbackState2);
-                         setCurrentMaze(fallbackState2);
-                     } catch (err3) {
-                         console.error("Critical Storage Error. Cannot save progress.", err3);
-                         alert("STORAGE FULL: Progress could not be saved. Please delete old mazes.");
-                     }
-                }
-            }
-        }
-     }
-
-     if (controlsRef.current) {
-         try { controlsRef.current.unlock(); } catch(e) {}
-     }
-     
-     setGameState(GameState.MENU);
-     audioManager.stopAmbience();
-  };
-
   return (
     <div ref={mountRef} className="w-full h-full relative bg-black">
       <GameOverlay 
@@ -1293,12 +1329,13 @@ const GameContent: React.FC = () => {
   );
 };
 
+// Export Wrapped App
 const App: React.FC = () => {
-  return (
-    <ErrorBoundary>
-      <GameContent />
-    </ErrorBoundary>
-  );
+    return (
+        <ErrorBoundary>
+            <GameContent />
+        </ErrorBoundary>
+    );
 };
 
 export default App;
