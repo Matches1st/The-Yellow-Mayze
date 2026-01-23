@@ -1,6 +1,6 @@
 
 import { audioManager } from './audioManager';
-import { SavedEventState } from '../types';
+import { SavedEventState, GasPhase } from '../types';
 
 // Phases of the atmospheric horror cycle
 export enum EventPhase {
@@ -16,9 +16,12 @@ export interface EventState {
   battery: number; // 0-100 percentage
   flashlightOn: boolean;
   intensityMultiplier: number; // 0.0 to 1.0 (for lights)
-  gasLevel: number; // 0.0 to 1.0
-  exposureTime: number; // Accumulated time in gas
-  debugTimer?: number; // Exposed for debugging if needed
+  
+  // Gas State
+  gasPhase: GasPhase;
+  gasTimer: number;
+  gasLevel: number; // 0.0 to 1.0 (visual fog density factor)
+  exposureTime: number; // Cumulative seconds of damage
 }
 
 export class EventSystem {
@@ -28,25 +31,35 @@ export class EventSystem {
     battery: 100,
     flashlightOn: false,
     intensityMultiplier: 1.0,
+    
+    gasPhase: GasPhase.IDLE,
+    gasTimer: 0,
     gasLevel: 0,
     exposureTime: 0
   };
 
+  // Horror Cycle Timers
   private timer = 0;
-  private blackoutDurationStore = 0; // Stores the duration of the upcoming blackout
+  private blackoutDurationStore = 0; 
   
-  // Configuration (Seconds)
-  private readonly MIN_IDLE = 210;       // 3:30
-  private readonly MAX_IDLE = 300;       // 5:00
-  
-  private readonly MIN_BLACKOUT_DURATION = 180; // 3:00
-  private readonly MAX_BLACKOUT_DURATION = 270; // 4:30
-  
-  private readonly RESTORE_DURATION = 2.0;
+  // Gas Cycle Timers
+  private gasDurationStore = 0; // Duration of FULL phase
 
-  // Battery Calculation: 100% over 150s (2.5 minutes)
-  // This ensures the battery drains at ~0.66% per second.
+  // Configuration (Seconds)
+  private readonly MIN_IDLE = 210;       
+  private readonly MAX_IDLE = 300;       
+  private readonly MIN_BLACKOUT_DURATION = 180; 
+  private readonly MAX_BLACKOUT_DURATION = 270; 
+  private readonly RESTORE_DURATION = 2.0;
   private readonly BATTERY_DRAIN_RATE = 100 / 150; 
+
+  // Gas Config
+  private readonly MIN_GAS_IDLE = 300; // 5 mins
+  private readonly MAX_GAS_IDLE = 420; // 7 mins
+  private readonly GAS_FILL_DURATION = 10.0;
+  private readonly GAS_FADE_DURATION = 10.0;
+  private readonly MIN_GAS_FULL = 40.0;
+  private readonly MAX_GAS_FULL = 50.0;
 
   constructor() {
     this.reset();
@@ -57,21 +70,25 @@ export class EventSystem {
       phase: EventPhase.IDLE_DELAY,
       isBlackout: false,
       battery: 100,
-      flashlightOn: false, // Flashlight resets to off
+      flashlightOn: false, 
       intensityMultiplier: 1.0,
+      
+      gasPhase: GasPhase.IDLE,
+      gasTimer: this.randomRange(this.MIN_GAS_IDLE, this.MAX_GAS_IDLE),
       gasLevel: 0,
       exposureTime: 0
     };
-    // Initial delay on world enter
+    
+    // Initial horror delay
     this.setTimer(this.randomRange(this.MIN_IDLE, this.MAX_IDLE));
     this.blackoutDurationStore = 0;
+    this.gasDurationStore = 0;
   }
 
   public update(delta: number, inVent: boolean = false): EventState {
-    // 1. Timer Tick
+    // --- HORROR EVENT CYCLE ---
     this.timer -= delta;
 
-    // 2. Battery Logic (Only drains during blackout phase when light is on)
     if (this.state.phase === EventPhase.BLACKOUT && this.state.flashlightOn) {
        this.state.battery -= (this.BATTERY_DRAIN_RATE * delta);
        if (this.state.battery <= 0) {
@@ -81,8 +98,6 @@ export class EventSystem {
        }
     }
 
-    // 3. Flicker Effect (Applied during FLICKERING and RESTORING)
-    // 450 BPM = 7.5 Hz. Sine wave > 0 for on/off.
     if (this.state.phase === EventPhase.FLICKERING || this.state.phase === EventPhase.RESTORING) {
         const strobe = Math.sin(Date.now() * 0.047) > 0; 
         this.state.intensityMultiplier = strobe ? 1.0 : 0.1;
@@ -92,22 +107,42 @@ export class EventSystem {
         this.state.intensityMultiplier = 1.0;
     }
 
-    // 4. Gas Logic (Simple Implementation: Vent = Gas)
-    if (inVent) {
-        this.state.gasLevel = Math.min(1.0, this.state.gasLevel + delta * 0.5); // Fade in gas
-        this.state.exposureTime += delta;
-    } else {
-        this.state.gasLevel = Math.max(0.0, this.state.gasLevel - delta * 0.5); // Fade out gas
-    }
-
-    // 5. Phase Transition Logic
     if (this.timer <= 0) {
         this.advancePhase();
     }
 
-    // 6. Sync Public State
     this.state.isBlackout = (this.state.phase === EventPhase.BLACKOUT);
-    this.state.debugTimer = this.timer;
+
+    // --- GAS CYCLE ---
+    this.state.gasTimer -= delta;
+
+    if (this.state.gasTimer <= 0) {
+        this.advanceGasPhase();
+    }
+
+    // Gas Level Calculation & Damage
+    switch (this.state.gasPhase) {
+        case GasPhase.IDLE:
+            this.state.gasLevel = 0;
+            break;
+        case GasPhase.FILLING:
+            // gasTimer counts down from 10. Progress 0 -> 1.
+            // Progress = 1 - (timer / duration)
+            this.state.gasLevel = Math.max(0, Math.min(1, 1 - (this.state.gasTimer / this.GAS_FILL_DURATION)));
+            break;
+        case GasPhase.FULL:
+            this.state.gasLevel = 1;
+            // DAMAGE LOGIC: Only at FULL gas and NOT in vent
+            if (!inVent) {
+                this.state.exposureTime += delta;
+            }
+            break;
+        case GasPhase.FADING:
+            // gasTimer counts down from 10. Progress 1 -> 0.
+            // Level = timer / duration
+            this.state.gasLevel = Math.max(0, Math.min(1, this.state.gasTimer / this.GAS_FADE_DURATION));
+            break;
+    }
 
     return { ...this.state };
   }
@@ -115,55 +150,65 @@ export class EventSystem {
   private advancePhase() {
       switch (this.state.phase) {
           case EventPhase.IDLE_DELAY:
-              // Idle time over, time to flip the coin
               this.triggerCoinFlipSequence();
               break;
-
           case EventPhase.FLICKERING:
-              // Flicker finished. Did we succeed (Blackout) or fail (Idle)?
               if (this.blackoutDurationStore > 0) {
-                  // Success! Go directly to blackout.
                   this.startBlackout();
               } else {
-                  // Failed flips (all tails), return to Idle
                   this.state.phase = EventPhase.IDLE_DELAY;
                   this.setTimer(this.randomRange(this.MIN_IDLE, this.MAX_IDLE));
               }
               break;
-
           case EventPhase.BLACKOUT:
-              // Blackout finished, brief flicker before restoring
               this.state.phase = EventPhase.RESTORING;
               this.setTimer(this.RESTORE_DURATION);
-              audioManager.playFlicker(); // Restore sound
+              audioManager.playFlicker();
               break;
-
           case EventPhase.RESTORING:
-              // Restoration done, restart cycle
               this.state.phase = EventPhase.IDLE_DELAY;
               this.setTimer(this.randomRange(this.MIN_IDLE, this.MAX_IDLE));
-              this.state.flashlightOn = false; // Auto-hide flashlight on restore
+              this.state.flashlightOn = false; 
+              break;
+      }
+  }
+
+  private advanceGasPhase() {
+      switch (this.state.gasPhase) {
+          case GasPhase.IDLE:
+              // Start Filling
+              this.state.gasPhase = GasPhase.FILLING;
+              this.state.gasTimer = this.GAS_FILL_DURATION;
+              // Determine next Full duration
+              this.gasDurationStore = this.randomRange(this.MIN_GAS_FULL, this.MAX_GAS_FULL);
+              break;
+          case GasPhase.FILLING:
+              // Start Full
+              this.state.gasPhase = GasPhase.FULL;
+              this.state.gasTimer = this.gasDurationStore;
+              break;
+          case GasPhase.FULL:
+              // Start Fading
+              this.state.gasPhase = GasPhase.FADING;
+              this.state.gasTimer = this.GAS_FADE_DURATION;
+              break;
+          case GasPhase.FADING:
+              // Return to Idle
+              this.state.gasPhase = GasPhase.IDLE;
+              this.state.gasTimer = this.randomRange(this.MIN_GAS_IDLE, this.MAX_GAS_IDLE);
               break;
       }
   }
 
   private triggerCoinFlipSequence() {
       let success = false;
-      let flickerTime = 7.0; // Default duration (used if all tails)
+      let flickerTime = 7.0; 
       let firstHeadFound = false;
 
-      // 3 Independent flips, 50% chance heads (0.50)
-      // Probability of at least one head (Blackout): 1 - (0.50)^3 = 0.875 (87.5%)
-      // Probability of all tails (Flicker only): 0.50^3 = 0.125 (12.5%)
-      // This creates very frequent blackouts for high tension, with rare relief.
       for (let i = 0; i < 3; i++) {
           const isHead = Math.random() < 0.50; 
-          
           if (isHead) {
               success = true;
-              
-              // Flicker duration based on FIRST successful head:
-              // 1st flip = 3s, 2nd flip = 5s, 3rd flip = 7s
               if (!firstHeadFound) {
                   if (i === 0) flickerTime = 3.0;
                   else if (i === 1) flickerTime = 5.0;
@@ -173,33 +218,23 @@ export class EventSystem {
           }
       }
 
-      // Transition to Flicker Phase immediately
       this.state.phase = EventPhase.FLICKERING;
       this.setTimer(flickerTime);
       audioManager.playFlicker();
 
-      // Store result for AFTER flicker
       if (success) {
-          // Success (≥1 heads): Set Blackout Duration (3:00 - 4:30)
           this.blackoutDurationStore = this.randomRange(this.MIN_BLACKOUT_DURATION, this.MAX_BLACKOUT_DURATION);
       } else {
-          // Failure (all tails): No blackout
           this.blackoutDurationStore = 0;
       }
-      
-      console.log(`[Event] Flips Done. Success: ${success}. Flicker: ${flickerTime}s. Blackout Duration: ${this.blackoutDurationStore}s`);
   }
 
   private startBlackout() {
       this.state.phase = EventPhase.BLACKOUT;
-      // Trigger for "That exact duration" calculated earlier
       this.setTimer(this.blackoutDurationStore);
-      
-      // Reset Gameplay State for Blackout
-      // Full Battery Reset (100% = 150s runtime)
       this.state.battery = 100;
-      this.state.flashlightOn = true; // Auto-on for survival
-      audioManager.playClick(); // Sound effect for flashlight on
+      this.state.flashlightOn = true; 
+      audioManager.playClick(); 
   }
 
   private setTimer(seconds: number) {
@@ -221,6 +256,11 @@ export class EventSystem {
       flashlightOn: this.state.flashlightOn,
       intensityMultiplier: this.state.intensityMultiplier,
       isBlackout: this.state.isBlackout,
+      
+      gasPhase: this.state.gasPhase,
+      gasTimer: this.state.gasTimer,
+      gasDurationStore: this.gasDurationStore,
+      gasLevel: this.state.gasLevel,
       exposureTime: this.state.exposureTime
     };
   }
@@ -232,14 +272,15 @@ export class EventSystem {
       battery: saved.battery,
       flashlightOn: saved.flashlightOn,
       intensityMultiplier: saved.intensityMultiplier,
-      gasLevel: 0, // Reset dynamic visuals
+      gasPhase: saved.gasPhase || GasPhase.IDLE,
+      gasTimer: saved.gasTimer || this.randomRange(this.MIN_GAS_IDLE, this.MAX_GAS_IDLE),
+      gasLevel: saved.gasLevel || 0,
       exposureTime: saved.exposureTime || 0
     };
     this.timer = saved.timer;
     this.blackoutDurationStore = saved.blackoutDurationStore;
+    this.gasDurationStore = saved.gasDurationStore || 0;
   }
-
-  // --- Public Interaction ---
 
   public toggleFlashlight(): boolean {
     if (this.state.phase === EventPhase.BLACKOUT) {
@@ -248,30 +289,34 @@ export class EventSystem {
             audioManager.playClick();
             return true;
         } else {
-            // Click but no light
             audioManager.playClick();
             return false;
         }
     }
-    // Normal mode flashlight toggle (optional/cosmetic)
     audioManager.playClick();
     return false;
   }
 
-  // Debug: Force a fresh event sequence immediately
   public forceEventSequence() {
-      // Guard: Don't interrupt if we are already in an active horror event
-      // This prevents phase skips or weird state resets during the action
       if (this.state.phase === EventPhase.FLICKERING || 
           this.state.phase === EventPhase.BLACKOUT || 
           this.state.phase === EventPhase.RESTORING) {
           console.log("Forced event ignored: Horror event already active.");
           return;
       }
-      
-      console.log("Debug: Forcing fresh coin flip sequence (P).");
-      // Directly call the trigger to bypass IDLE delay and generate fresh random values
       this.triggerCoinFlipSequence();
+  }
+
+  public triggerGasSequence() {
+      if (this.state.gasPhase !== GasPhase.IDLE) {
+          console.log("Forced gas event ignored: Gas event already active.");
+          return;
+      }
+      // Force start filling phase
+      this.state.gasPhase = GasPhase.FILLING;
+      this.state.gasTimer = this.GAS_FILL_DURATION;
+      this.gasDurationStore = this.randomRange(this.MIN_GAS_FULL, this.MAX_GAS_FULL);
+      console.log("Debug: Forced Gas Event Started");
   }
   
   public getState() { return this.state; }

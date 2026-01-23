@@ -16,25 +16,32 @@ export enum Difficulty {
   HARDCORE = 'Hardcore'
 }
 
+export enum GasPhase {
+  IDLE = 'IDLE',
+  FILLING = 'FILLING',
+  FULL = 'FULL',
+  FADING = 'FADING'
+}
+
 export interface ReplayFrame {
   t: number; // timestamp in ms
   p: { x: number, y: number, z: number }; // position
-  r: { x: number, y: number, z: number }; // rotation (Euler) - kept for fallback
-  q: { x: number, y: number, z: number, w: number }; // rotation (Quaternion) - for smooth Slerp
+  r: { x: number, y: number, z: number }; // rotation (Euler)
+  q: { x: number, y: number, z: number, w: number }; // rotation (Quaternion)
   s: 0 | 1 | 2; // selected slot
   b: number; // battery
   f: boolean; // flashlight on
   
-  // New Atmospheric & Map Fields
+  // Atmospheric & Map Fields
   ib: boolean; // isBlackout
   if: boolean; // isFlickerActive
   im: boolean; // isMapOpen
-  mr: number;  // mapViewRemaining (seconds)
-  cr: number;  // cooldownRemaining (seconds)
+  mr: number;  // mapViewRemaining
+  cr: number;  // cooldownRemaining
   
-  // Gas / Vent Fields
-  gl?: number; // gasLevel
-  et?: number; // exposureTime
+  // Gas Fields
+  gl?: number; // gasLevel (0-1)
+  et?: number; // exposureTime (cumulative damage)
 }
 
 export interface ReplayEvent {
@@ -44,6 +51,7 @@ export interface ReplayEvent {
 }
 
 export interface SavedEventState {
+  // Horror Cycle
   phase: string;
   timer: number;
   blackoutDurationStore: number;
@@ -51,6 +59,12 @@ export interface SavedEventState {
   flashlightOn: boolean;
   intensityMultiplier: number;
   isBlackout: boolean;
+  
+  // Gas Cycle
+  gasPhase?: GasPhase;
+  gasTimer?: number;
+  gasDurationStore?: number; 
+  gasLevel?: number;
   exposureTime?: number;
 }
 
@@ -60,21 +74,21 @@ export interface SavedMaze {
   seed: string | number;
   difficulty: Difficulty;
   timeSpent: number; // in milliseconds
-  finalTimerMs?: number; // Snapshot of time upon completion
+  finalTimerMs?: number; 
   completed: boolean;
-  died?: boolean; // Died in maze
-  thumbnail: string; // Data URL
+  died?: boolean; // New field for gas death
+  thumbnail: string; 
   gridSize: number;
-  gridData: string; // Base64 or JSON string of the layout
+  gridData: string; 
   playerPos: { x: number, y: number, z: number };
   playerRot: { x: number, y: number, z: number };
-  remainingMarkers: number; // Hotbar slot 2 count
+  remainingMarkers: number; 
   markers: Array<{ x: number, y: number, z: number, nx: number, ny: number, nz: number }>;
-  visited: string[]; // Array of "x,y" coordinates for explored map cells
-  mapCooldownRemaining?: number; // Persisted cooldown state
-  mapViewRemaining?: number; // Persisted active view timer
-  isMapOpen?: boolean; // Persisted open state
-  eventState?: SavedEventState; // Persisted horror event state
+  visited: string[]; 
+  mapCooldownRemaining?: number; 
+  mapViewRemaining?: number; 
+  isMapOpen?: boolean; 
+  eventState?: SavedEventState; 
   recording?: {
     frames: ReplayFrame[];
     events: ReplayEvent[];

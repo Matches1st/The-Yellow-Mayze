@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { GameState, SavedMaze, Difficulty, AppOptions } from '../types';
 import { Persistence } from '../services/persistence';
@@ -145,11 +144,13 @@ interface Props {
   // Exit Props
   exitOpacity: number;
   
-  // New Gameplay Props
+  // Vent Interactions
   interactionPrompt?: string | null;
-  inVent?: boolean;
-  exposureTime?: number;
-  isDead?: boolean;
+  inVent: boolean;
+
+  // Gas Mechanics
+  exposureTime: number; // Seconds of exposure (max 10)
+  isDead: boolean;
 }
 
 export const GameOverlay: React.FC<Props> = ({
@@ -183,7 +184,7 @@ export const GameOverlay: React.FC<Props> = ({
   interactionPrompt,
   inVent,
   exposureTime = 0,
-  isDead
+  isDead = false
 }) => {
   const [activeMenu, setActiveMenu] = useState<'main' | 'mazes' | 'options' | 'generate'>('main');
   const [seedInput, setSeedInput] = useState('');
@@ -273,43 +274,69 @@ export const GameOverlay: React.FC<Props> = ({
       onRegenerate(editingMaze);
   };
 
+  const getStatusText = () => {
+      if (isDead || currentMaze?.died) return "FAILED";
+      if (currentMaze?.completed) return "MAZE COMPLETED";
+      return "REPLAY MODE";
+  };
+
+  const getStatusClass = () => {
+      if (isDead || currentMaze?.died) return "text-red-600 font-bold";
+      if (currentMaze?.completed) return "text-green-500 font-bold";
+      return "";
+  };
+
   // --- HUD (Playing & Replay) ---
   if (gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.REPLAY) {
+    // Health Percentage (Starts 100%, drops to 0% at 10s exposure)
+    const healthPct = Math.max(0, (10 - exposureTime) / 10) * 100;
+    const vignetteOpacity = Math.min(1, exposureTime / 10);
+
     return (
       <>
         {/* WHITE EXIT FADE OVERLAY */}
-        {exitOpacity > 0 && (
+        {exitOpacity > 0 && !isDead && (
             <div 
-                className={`fixed inset-0 z-[100] pointer-events-none transition-none ${isDead ? 'bg-black' : 'bg-white'}`}
+                className="fixed inset-0 bg-white z-[100] pointer-events-none transition-none"
                 style={{ opacity: exitOpacity }}
-            >
-                {isDead && exitOpacity >= 1 && (
-                     <div className="flex items-center justify-center w-full h-full text-red-700 text-6xl font-minecraft font-bold">
-                         YOU DIED
-                     </div>
-                )}
-            </div>
+            />
         )}
 
-        {/* GAS OVERLAY (If in Vent or Exposed) */}
-        {exposureTime > 0 && (
-             <div 
-                className="fixed inset-0 pointer-events-none mix-blend-multiply z-10 transition-opacity"
+        {/* DEATH FADE OVERLAY (Black) */}
+        {exitOpacity > 0 && isDead && (
+            <div 
+                className="fixed inset-0 bg-black z-[100] pointer-events-none transition-none"
+                style={{ opacity: exitOpacity }}
+            />
+        )}
+
+        {/* RED DAMAGE VIGNETTE */}
+        {vignetteOpacity > 0 && (
+            <div 
+                className="fixed inset-0 z-[50] pointer-events-none transition-opacity duration-100"
                 style={{ 
-                    backgroundColor: `rgba(80, 20, 100, ${Math.min(0.8, exposureTime / 10)})` 
+                    opacity: vignetteOpacity,
+                    background: 'radial-gradient(circle at center, transparent 30%, rgba(255,0,0,0.8) 100%)' 
                 }}
-             />
+            />
         )}
         
-        {/* VENT HUD */}
+        {/* INSIDE VENT OVERLAY */}
         {inVent && (
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] h-[90%] border-[100px] border-black/80 rounded-[50px] pointer-events-none blur-sm z-20" />
-        )}
-
-        {/* INTERACTION PROMPT */}
-        {interactionPrompt && (
-            <div className="absolute top-[60%] left-1/2 -translate-x-1/2 text-white font-minecraft text-xl bg-black/50 px-4 py-2 rounded">
-                {interactionPrompt}
+            <div className="fixed inset-0 z-[60] pointer-events-none flex items-center justify-center bg-black/60">
+                 {/* Vignette */}
+                 <div className="absolute inset-0 bg-[radial-gradient(circle,transparent_40%,#000000_100%)]"></div>
+                 
+                 {/* Bars / Grille Effect - Procedural CSS */}
+                 <div className="w-full h-full" style={{
+                     backgroundImage: `repeating-linear-gradient(0deg, transparent, transparent 40px, #000 40px, #000 50px),
+                                       repeating-linear-gradient(90deg, transparent, transparent 40px, #000 40px, #000 50px)`,
+                     opacity: 0.8
+                 }}></div>
+                 
+                 <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/50 text-xl font-minecraft animate-pulse">
+                     [ PRESS E TO EXIT ]
+                 </div>
             </div>
         )}
 
@@ -317,8 +344,8 @@ export const GameOverlay: React.FC<Props> = ({
         {gameState === GameState.REPLAY && (
             <div className="absolute bottom-10 left-1/2 -translate-x-1/2 w-[800px] bg-black/80 border-2 border-[#C9B458] p-4 flex flex-col gap-2 rounded pointer-events-auto">
                 <div className="flex justify-between text-[#C9B458] font-minecraft text-xl mb-1">
-                    <span className={currentMaze?.completed ? "text-green-500 font-bold" : currentMaze?.died ? "text-red-500 font-bold" : ""}>
-                        {currentMaze?.completed ? "MAZE COMPLETED" : currentMaze?.died ? "PLAYER DIED" : "REPLAY MODE"}
+                    <span className={getStatusClass()}>
+                        {getStatusText()}
                     </span>
                     <span>{formatTime(replayTime)} / {formatTime(replayDuration)}</span>
                 </div>
@@ -381,6 +408,19 @@ export const GameOverlay: React.FC<Props> = ({
           Time: {formatTime(timeSpent)}
         </div>
 
+        {/* HEALTH BAR (GAS) - Only visible if damage taken */}
+        {exposureTime > 0 && (
+            <div className="absolute top-1/2 right-4 -translate-y-1/2 flex flex-col items-center pointer-events-none">
+                <div className="w-8 h-64 bg-gray-900 border-2 border-gray-600 relative rounded overflow-hidden">
+                    <div 
+                        className={`absolute bottom-0 w-full transition-all duration-200 ${healthPct < 30 ? 'bg-red-600 animate-pulse' : 'bg-green-600'}`}
+                        style={{ height: `${healthPct}%` }}
+                    />
+                </div>
+                <span className="text-white font-minecraft mt-2 text-xl bg-black/50 px-2 rounded">HEALTH</span>
+            </div>
+        )}
+
         {(isBlackout || (gameState === GameState.REPLAY && battery < 100)) && (
           <div className="absolute top-4 right-4 flex flex-col items-center pointer-events-none">
              <div className="w-10 h-48 bg-gray-900 border-2 border-gray-600 relative rounded">
@@ -397,9 +437,16 @@ export const GameOverlay: React.FC<Props> = ({
           </div>
         )}
 
+        {/* INTERACTION PROMPT */}
+        {interactionPrompt && !inVent && gameState === GameState.PLAYING && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 mt-10 text-white font-minecraft text-2xl drop-shadow-md z-50 pointer-events-none animate-bounce">
+                {interactionPrompt}
+            </div>
+        )}
+
         {/* Hotbar */}
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/80 p-2 rounded-lg border-2 border-[#4A4A4A] flex gap-4 pointer-events-auto transition-opacity duration-500"
-             style={{ opacity: gameState === GameState.REPLAY ? 0.8 : 1 }}
+             style={{ opacity: gameState === GameState.REPLAY || inVent ? 0.3 : 1 }}
         >
           {/* SLOT 1: MAP ABILITY STATUS */}
           <div 
@@ -491,6 +538,7 @@ export const GameOverlay: React.FC<Props> = ({
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 font-minecraft text-white"
         onClick={() => setSelectedMazeId(null)} 
     >
+      {/* ... (Previous Menu Content Unchanged) ... */}
       {activeMenu === 'main' && (
         <div className="flex flex-col items-center animate-in fade-in duration-1000" onClick={e => e.stopPropagation()}>
           <h1 className="text-[108px] font-bold text-[#C9B458] text-glow mb-24 animate-pulse">MAYZE</h1>
@@ -542,8 +590,11 @@ export const GameOverlay: React.FC<Props> = ({
                         <span className="text-gray-400">
                            {maze.completed ? formatTime(maze.finalTimerMs ?? maze.timeSpent) : formatTime(maze.timeSpent)}
                         </span>
-                        {maze.completed && <span className="text-green-500 font-bold flex items-center gap-2">COMPLETED</span>}
-                        {maze.died && <span className="text-red-500 font-bold flex items-center gap-2">DIED</span>}
+                        {(maze.completed || maze.died) && (
+                            <span className={maze.died ? "text-red-500 font-bold" : "text-green-500 font-bold"}>
+                                {maze.died ? "FAILED" : "COMPLETED"}
+                            </span>
+                        )}
                      </div>
                   </div>
                </div>
