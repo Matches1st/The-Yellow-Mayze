@@ -147,6 +147,10 @@ interface Props {
   // Vent Interactions
   interactionPrompt: string | null;
   inVent: boolean;
+
+  // Gas Mechanics
+  exposureTime: number; // Seconds of exposure (max 10)
+  isDead: boolean;
 }
 
 export const GameOverlay: React.FC<Props> = ({
@@ -178,7 +182,9 @@ export const GameOverlay: React.FC<Props> = ({
   onReplaySpeed,
   exitOpacity,
   interactionPrompt,
-  inVent
+  inVent,
+  exposureTime,
+  isDead
 }) => {
   const [activeMenu, setActiveMenu] = useState<'main' | 'mazes' | 'options' | 'generate'>('main');
   const [seedInput, setSeedInput] = useState('');
@@ -268,15 +274,50 @@ export const GameOverlay: React.FC<Props> = ({
       onRegenerate(editingMaze);
   };
 
+  const getStatusText = () => {
+      if (isDead || currentMaze?.died) return "FAILED";
+      if (currentMaze?.completed) return "MAZE COMPLETED";
+      return "REPLAY MODE";
+  };
+
+  const getStatusClass = () => {
+      if (isDead || currentMaze?.died) return "text-red-600 font-bold";
+      if (currentMaze?.completed) return "text-green-500 font-bold";
+      return "";
+  };
+
   // --- HUD (Playing & Replay) ---
   if (gameState === GameState.PLAYING || gameState === GameState.PAUSED || gameState === GameState.REPLAY) {
+    // Health Percentage (Starts 100%, drops to 0% at 10s exposure)
+    const healthPct = Math.max(0, (10 - exposureTime) / 10) * 100;
+    const vignetteOpacity = Math.min(1, exposureTime / 10);
+
     return (
       <>
         {/* WHITE EXIT FADE OVERLAY */}
-        {exitOpacity > 0 && (
+        {exitOpacity > 0 && !isDead && (
             <div 
                 className="fixed inset-0 bg-white z-[100] pointer-events-none transition-none"
                 style={{ opacity: exitOpacity }}
+            />
+        )}
+
+        {/* DEATH FADE OVERLAY (Black) */}
+        {exitOpacity > 0 && isDead && (
+            <div 
+                className="fixed inset-0 bg-black z-[100] pointer-events-none transition-none"
+                style={{ opacity: exitOpacity }}
+            />
+        )}
+
+        {/* RED DAMAGE VIGNETTE */}
+        {vignetteOpacity > 0 && (
+            <div 
+                className="fixed inset-0 z-[50] pointer-events-none transition-opacity duration-100"
+                style={{ 
+                    opacity: vignetteOpacity,
+                    background: 'radial-gradient(circle at center, transparent 30%, rgba(255,0,0,0.8) 100%)' 
+                }}
             />
         )}
         
@@ -303,8 +344,8 @@ export const GameOverlay: React.FC<Props> = ({
         {gameState === GameState.REPLAY && (
             <div className="absolute bottom-10 left-1/2 -translate-x-1/2 w-[800px] bg-black/80 border-2 border-[#C9B458] p-4 flex flex-col gap-2 rounded pointer-events-auto">
                 <div className="flex justify-between text-[#C9B458] font-minecraft text-xl mb-1">
-                    <span className={currentMaze?.completed ? "text-green-500 font-bold" : ""}>
-                        {currentMaze?.completed ? "MAZE COMPLETED" : "REPLAY MODE"}
+                    <span className={getStatusClass()}>
+                        {getStatusText()}
                     </span>
                     <span>{formatTime(replayTime)} / {formatTime(replayDuration)}</span>
                 </div>
@@ -366,6 +407,19 @@ export const GameOverlay: React.FC<Props> = ({
         <div className="absolute top-4 left-4 bg-black/60 p-4 rounded text-white font-minecraft text-2xl border-2 border-white/20 pointer-events-none">
           Time: {formatTime(timeSpent)}
         </div>
+
+        {/* HEALTH BAR (GAS) - Only visible if damage taken */}
+        {exposureTime > 0 && (
+            <div className="absolute top-1/2 right-4 -translate-y-1/2 flex flex-col items-center pointer-events-none">
+                <div className="w-8 h-64 bg-gray-900 border-2 border-gray-600 relative rounded overflow-hidden">
+                    <div 
+                        className={`absolute bottom-0 w-full transition-all duration-200 ${healthPct < 30 ? 'bg-red-600 animate-pulse' : 'bg-green-600'}`}
+                        style={{ height: `${healthPct}%` }}
+                    />
+                </div>
+                <span className="text-white font-minecraft mt-2 text-xl bg-black/50 px-2 rounded">HEALTH</span>
+            </div>
+        )}
 
         {(isBlackout || (gameState === GameState.REPLAY && battery < 100)) && (
           <div className="absolute top-4 right-4 flex flex-col items-center pointer-events-none">
@@ -478,12 +532,13 @@ export const GameOverlay: React.FC<Props> = ({
     );
   }
 
-  // Main Menus (Unchanged logic, just wrapper)
+  // Main Menus...
   return (
     <div 
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 font-minecraft text-white"
         onClick={() => setSelectedMazeId(null)} 
     >
+      {/* ... (Previous Menu Content Unchanged) ... */}
       {activeMenu === 'main' && (
         <div className="flex flex-col items-center animate-in fade-in duration-1000" onClick={e => e.stopPropagation()}>
           <h1 className="text-[108px] font-bold text-[#C9B458] text-glow mb-24 animate-pulse">MAYZE</h1>
@@ -535,7 +590,11 @@ export const GameOverlay: React.FC<Props> = ({
                         <span className="text-gray-400">
                            {maze.completed ? formatTime(maze.finalTimerMs ?? maze.timeSpent) : formatTime(maze.timeSpent)}
                         </span>
-                        {maze.completed && <span className="text-green-500 font-bold flex items-center gap-2">COMPLETED</span>}
+                        {(maze.completed || maze.died) && (
+                            <span className={maze.died ? "text-red-500 font-bold" : "text-green-500 font-bold"}>
+                                {maze.died ? "FAILED" : "COMPLETED"}
+                            </span>
+                        )}
                      </div>
                   </div>
                </div>
