@@ -1,4 +1,3 @@
-
 import * as THREE from 'three';
 import { COLORS } from '../constants';
 
@@ -30,46 +29,6 @@ const createNoiseTexture = (width: number, height: number, opacity: number = 0.2
   tex.wrapT = THREE.RepeatWrapping;
   return tex;
 }
-
-// Procedural Grate Texture for Vents
-export const createGrateTexture = (resolution: number = 512) => {
-  const canvas = document.createElement('canvas');
-  canvas.width = resolution;
-  canvas.height = resolution;
-  const ctx = canvas.getContext('2d')!;
-
-  // Background (Dark Metal)
-  ctx.fillStyle = '#111111';
-  ctx.fillRect(0, 0, resolution, resolution);
-
-  // Draw Grid Bars (Black)
-  const barThickness = 28; 
-  const spacing = 36;
-  
-  // Fill the holes first with semi-transparent gray
-  ctx.fillStyle = 'rgba(30, 30, 30, 0.7)';
-  // Actually, easiest to fill whole background with hole color then draw bars on top
-  ctx.fillRect(0, 0, resolution, resolution);
-
-  ctx.fillStyle = '#000000';
-  
-  // Horizontal Bars
-  for (let y = 0; y < resolution; y += spacing) {
-      ctx.fillRect(0, y, resolution, barThickness);
-  }
-  // Vertical Bars
-  for (let x = 0; x < resolution; x += spacing) {
-      ctx.fillRect(x, 0, barThickness, resolution);
-  }
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-};
 
 export const createProceduralMaterial = (type: 'wall' | 'floor' | 'ceiling') => {
   const canvas = document.createElement('canvas');
